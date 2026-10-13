@@ -104,6 +104,10 @@ class RemaxScraper(BaseScraper):
                         if total_cost > MAX_TOTAL_BUDGET_ARS:
                             continue
 
+                        # Descartar si el alquiler está a menos de $150.000 del tope sin expensas especificadas
+                        if expenses <= 0.0 and price >= (MAX_TOTAL_BUDGET_ARS - 150000):
+                            continue
+
                         # 4. Ambientes
                         rooms = int(it.get("totalRooms") or 0)
                         if 0 < rooms < MIN_ROOMS:

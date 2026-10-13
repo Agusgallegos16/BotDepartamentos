@@ -234,6 +234,10 @@ class MercadoLibreScraper(BaseScraper):
             if total_cost > MAX_TOTAL_BUDGET_ARS:
                 continue
 
+            # Descartar si el alquiler está a menos de $150.000 del tope sin expensas especificadas
+            if c["expenses_ars"] <= 0.0 and c["price_ars"] >= (MAX_TOTAL_BUDGET_ARS - 150000):
+                continue
+
             listing = Listing(
                 id=f"{self.portal_name}_{c['portal_id']}",
                 portal=self.portal_name,

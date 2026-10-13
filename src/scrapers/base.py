@@ -132,6 +132,13 @@ class BaseScraper(abc.ABC):
                             f"[{self.portal_name}] Descartado '{item.title}': {item.rooms} amb menor a mínimo ({MIN_ROOMS} amb)"
                         )
                         continue
+                    # Descartar si el alquiler está a menos de $150.000 del tope pero no especifica expensas
+                    if item.expenses_ars <= 0.0 and item.price_ars >= (MAX_TOTAL_BUDGET_ARS - 150000):
+                        logger.debug(
+                            f"[{self.portal_name}] Descartado '{item.title}': alquiler ${item.price_ars:,.0f} "
+                            f"a menos de $150.000 del tope (${MAX_TOTAL_BUDGET_ARS:,.0f}) sin expensas especificadas"
+                        )
+                        continue
                     valid.append(item)
 
                 logger.info(
