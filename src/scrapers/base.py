@@ -117,10 +117,20 @@ class BaseScraper(abc.ABC):
                 for item in listings:
                     # Descartar precios nulos o avisos spam/servicios (menos de $150.000 ARS)
                     if item.price_ars < 150000:
+                        logger.debug(
+                            f"[{self.portal_name}] Descartado '{item.title}': precio ${item.price_ars:,.0f} menor a $150.000"
+                        )
                         continue
                     if item.total_cost_ars > MAX_TOTAL_BUDGET_ARS:
+                        logger.debug(
+                            f"[{self.portal_name}] Descartado '{item.title}': costo total ${item.total_cost_ars:,.0f} "
+                            f"(alquiler ${item.price_ars:,.0f} + exp ${item.expenses_ars:,.0f}) supera ${MAX_TOTAL_BUDGET_ARS:,.0f}"
+                        )
                         continue
                     if item.rooms > 0 and item.rooms < MIN_ROOMS:
+                        logger.debug(
+                            f"[{self.portal_name}] Descartado '{item.title}': {item.rooms} amb menor a mínimo ({MIN_ROOMS} amb)"
+                        )
                         continue
                     valid.append(item)
 

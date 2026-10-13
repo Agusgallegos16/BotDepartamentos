@@ -6,6 +6,7 @@ from src.config import (
     MAX_TOTAL_BUDGET_ARS,
     MIN_ROOMS,
     NEIGHBORHOOD_SLUGS,
+    TARGET_NEIGHBORHOODS,
     Listing,
 )
 from src.scrapers.base import BaseScraper
@@ -25,6 +26,8 @@ class RemaxScraper(BaseScraper):
         """Determines if the listing's geoLabel matches any configured neighborhood."""
         geo_lower = geo_label.lower()
         for key, info in NEIGHBORHOOD_SLUGS.items():
+            if key not in TARGET_NEIGHBORHOODS:
+                continue
             # Comparar tanto con el slug como con el nombre en español (ej: "villa del parque", "villa-del-parque")
             normalized_name = info["name"].lower()
             normalized_slug = key.replace("-", " ")
@@ -40,21 +43,24 @@ class RemaxScraper(BaseScraper):
 
     def scrape_all(self) -> List[Listing]:
         """
-        Queries the Remax API for recent rentals in CABA.
-        As the API allows fetching bulk recent listings, 1 or 2 requests
-        cover all target neighborhoods instantly and efficiently.
+        Queries the Remax API for recent rentals in CABA matching budget and rooms.
         """
         all_listings: List[Listing] = []
+        seen_ids = set()
+        max_budget = int(MAX_TOTAL_BUDGET_ARS)
         logger.info(f"--- Iniciando extracción para {self.portal_name.upper()} ---")
 
-        # Consultar las primeras 2 páginas (hasta 100 publicaciones recientes de alquiler)
-        for page in range(2):
+        for page in range(5):
             try:
                 params = {
                     "page": page,
                     "pageSize": 50,
                     "sort": "-createdAt",
-                    "in": "operationId:2",  # 2 = alquiler tradicional
+                    "in": "operationId:2",              # 2 = alquiler tradicional
+                    "eq": "currencyId:2",               # 2 = ARS
+                    "like": "geoLabel:Capital Federal", # Inmuebles en CABA
+                    "lte": f"price:{max_budget}",       # Alquiler <= presupuesto
+                    "gte": f"totalRooms:{MIN_ROOMS}",   # Ambientes mínimos
                 }
                 logger.info(f"[{self.portal_name}] GET API page {page}")
                 resp = self.session.get(self.API_URL, params=params, timeout=15)
@@ -65,18 +71,24 @@ class RemaxScraper(BaseScraper):
                     break
 
                 json_data = resp.json()
-                items = json_data.get("data", {}).get("data", [])
+                data_obj = json_data.get("data") or {}
+                items = data_obj.get("data", [])
+                total_items = data_obj.get("totalItems", 0)
                 if not items:
                     break
 
                 for it in items:
                     try:
+                        listing_id = str(it.get("id"))
+                        if not listing_id or listing_id in seen_ids:
+                            continue
+
                         # 1. Moneda: Solo ARS
-                        curr = it.get("currency", {}).get("value", "")
+                        curr = (it.get("currency") or {}).get("value", "")
                         if curr != "ARS":
                             continue
 
-                        # 2. Ubicación: Validar si pertenece a CABA y a los barrios objetivo
+                        # 2. Ubicación: Validar si pertenece a los barrios objetivo
                         geo_label = it.get("geoLabel", "") or ""
                         matched_nb = self._match_neighborhood(geo_label)
                         if not matched_nb:
@@ -84,7 +96,7 @@ class RemaxScraper(BaseScraper):
 
                         # 3. Precios y Expensas
                         price = float(it.get("price") or 0.0)
-                        if price <= 0:
+                        if price < 150000:
                             continue
 
                         expenses = float(it.get("expensesPrice") or 0.0)
@@ -96,6 +108,8 @@ class RemaxScraper(BaseScraper):
                         rooms = int(it.get("totalRooms") or 0)
                         if 0 < rooms < MIN_ROOMS:
                             continue
+
+                        seen_ids.add(listing_id)
 
                         # 5. Metros cuadrados y Balcón
                         m2 = float(
@@ -147,6 +161,9 @@ class RemaxScraper(BaseScraper):
                             f"[{self.portal_name}] Error parseando item individual: {item_err}"
                         )
                         continue
+
+                if total_items and (page + 1) * 50 >= total_items:
+                    break
 
             except Exception as e:
                 logger.error(f"[{self.portal_name}] Error en request API página {page}: {e}")

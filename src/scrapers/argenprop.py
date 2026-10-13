@@ -24,9 +24,18 @@ class ArgenpropScraper(BaseScraper):
 
     def _build_url(self, neighborhood_slug: str) -> str:
         max_budget = int(MAX_TOTAL_BUDGET_ARS)
+        if MIN_ROOMS <= 1:
+            room_slug = "1-ambiente-o-2-ambientes-o-3-ambientes"
+        elif MIN_ROOMS == 2:
+            room_slug = "2-ambientes-o-3-ambientes"
+        elif MIN_ROOMS == 3:
+            room_slug = "3-ambientes-o-4-ambientes"
+        else:
+            room_slug = f"{MIN_ROOMS}-ambientes"
+
         return (
             f"{self.BASE_URL}/departamentos/alquiler/{neighborhood_slug}/"
-            f"2-ambientes-o-3-ambientes?hasta-{max_budget}"
+            f"{room_slug}?hasta-{max_budget}"
         )
 
     def scrape_neighborhood(self, neighborhood: str) -> List[Listing]:

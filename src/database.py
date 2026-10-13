@@ -63,6 +63,19 @@ class Database:
                 """
             )
 
+    def get_cached_expenses(self, listing_id: str, current_price: float) -> Optional[float]:
+        """Returns cached expenses if listing exists with the same price, avoiding repeated HTTP fetches."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT price_ars, expenses_ars FROM listings WHERE id = ?",
+                (listing_id,),
+            )
+            row = cursor.fetchone()
+            if row and row["price_ars"] == current_price and row["expenses_ars"] is not None:
+                return float(row["expenses_ars"])
+        return None
+
     def process_listing(self, listing: Listing) -> Tuple[str, Optional[float]]:
         """
         Evaluate listing against DB records.

@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import List
+from curl_cffi import requests
 from selectolax.lexbor import LexborHTMLParser
 
 from src.config import (
     MAX_TOTAL_BUDGET_ARS,
     MIN_ROOMS,
     NEIGHBORHOOD_SLUGS,
+    REQUEST_TIMEOUT,
     Listing,
 )
+from src.database import Database
 from src.scrapers.base import BaseScraper
 
 logger = logging.getLogger(__name__)
@@ -21,6 +26,19 @@ class MercadoLibreScraper(BaseScraper):
 
     portal_name: str = "mercadolibre"
     BASE_URL = "https://inmuebles.mercadolibre.com.ar"
+
+    def __init__(self):
+        super().__init__()
+        self.db = Database()
+        self._thread_local = threading.local()
+
+    def _get_thread_session(self):
+        """Devuelve una sesión curl_cffi segura y local al hilo actual."""
+        if not hasattr(self._thread_local, "session"):
+            sess = requests.Session(impersonate="chrome124")
+            sess.headers.update(self.session.headers)
+            self._thread_local.session = sess
+        return self._thread_local.session
 
     def _build_url(self, neighborhood_slug: str) -> str:
         max_budget = int(MAX_TOTAL_BUDGET_ARS)
@@ -36,9 +54,11 @@ class MercadoLibreScraper(BaseScraper):
     def _fetch_detail_expenses(self, detail_url: str) -> float:
         """Extrae el valor de expensas accediendo a la ficha de la propiedad."""
         try:
-            html = self.fetch_html(detail_url)
-            if not html:
+            sess = self._get_thread_session()
+            resp = sess.get(detail_url, timeout=REQUEST_TIMEOUT)
+            if resp.status_code != 200:
                 return 0.0
+            html = resp.text
             parser = LexborHTMLParser(html)
 
             # 1. Elemento directo de expensas (ej: 'Expensas desde $ 135.000')
@@ -81,7 +101,7 @@ class MercadoLibreScraper(BaseScraper):
         parser = LexborHTMLParser(html_content)
         cards = parser.css("li.ui-search-layout__item")
 
-        listings: List[Listing] = []
+        raw_candidates = []
 
         for card in cards:
             try:
@@ -108,33 +128,19 @@ class MercadoLibreScraper(BaseScraper):
                     else str(hash(full_url))
                 )
 
-                # Título
-                title_elem = card.css_first(
-                    ".poly-component__title, .ui-search-item__title, h2"
-                )
-                title = title_elem.text(strip=True) if title_elem else "Departamento"
-
                 # Precio
                 price_elem = card.css_first(".andes-money-amount__fraction")
                 raw_price = price_elem.text(strip=True) if price_elem else ""
                 price_ars = self.parse_ars_number(raw_price)
 
-                if price_ars <= 0:
+                if price_ars <= 0 or price_ars > MAX_TOTAL_BUDGET_ARS:
                     continue
 
-                # Expensas: si no están en la tarjeta, consultar la página del aviso
-                expenses_ars = 0.0
-                card_text = card.text() or ""
-                exp_match = re.search(r"expensas\s*[:$]?\s*([\d\.]+)", card_text, re.IGNORECASE)
-                if exp_match:
-                    expenses_ars = self.parse_ars_number(exp_match.group(1))
-
-                if expenses_ars <= 0.0:
-                    expenses_ars = self._fetch_detail_expenses(full_url)
-
-                # Si con expensas supera el presupuesto máximo, descartar
-                if (price_ars + expenses_ars) > MAX_TOTAL_BUDGET_ARS:
-                    continue
+                # Título
+                title_elem = card.css_first(
+                    ".poly-component__title, .ui-search-item__title, h2"
+                )
+                title = title_elem.text(strip=True) if title_elem else "Departamento"
 
                 # Ubicación / Dirección
                 loc_elem = card.css_first(
@@ -147,7 +153,7 @@ class MercadoLibreScraper(BaseScraper):
                     ".poly-attributes-list__item, ul.ui-search-card-attributes li"
                 )
                 attr_texts = [a.text(strip=True) for a in attr_items]
-                combined_text = " ".join([title, address] + attr_texts)
+                combined_text = " ".join([title, address] + attr_texts + [card.text() or ""])
 
                 rooms = 0
                 m2 = 0.0
@@ -179,25 +185,71 @@ class MercadoLibreScraper(BaseScraper):
                         or ""
                     )
 
-                listing = Listing(
-                    id=f"{self.portal_name}_{portal_id}",
-                    portal=self.portal_name,
-                    portal_id=portal_id,
-                    url=full_url,
-                    title=title,
-                    neighborhood=slug_info["name"],
-                    address=address,
-                    price_ars=price_ars,
-                    expenses_ars=expenses_ars,
-                    rooms=rooms,
-                    m2=m2,
-                    has_balcony=has_balcony,
-                    thumbnail_url=img_url,
-                )
-                listings.append(listing)
+                # 1. Intentar extraer expensas directamente del texto de la tarjeta
+                expenses_ars = 0.0
+                card_text = card.text() or ""
+                exp_match = re.search(r"expensas\s*[:$]?\s*([\d\.]+)", card_text, re.IGNORECASE)
+                if exp_match:
+                    expenses_ars = self.parse_ars_number(exp_match.group(1))
+
+                # 2. Si no están en la tarjeta, verificar si ya las tenemos en caché de la base de datos
+                listing_db_id = f"{self.portal_name}_{portal_id}"
+                if expenses_ars <= 0.0:
+                    cached_exp = self.db.get_cached_expenses(listing_db_id, price_ars)
+                    if cached_exp is not None:
+                        expenses_ars = cached_exp
+
+                raw_candidates.append({
+                    "portal_id": portal_id,
+                    "full_url": full_url,
+                    "title": title,
+                    "address": address,
+                    "price_ars": price_ars,
+                    "expenses_ars": expenses_ars,
+                    "rooms": rooms,
+                    "m2": m2,
+                    "has_balcony": has_balcony,
+                    "img_url": img_url,
+                })
 
             except Exception as e:
                 logger.debug(f"[{self.portal_name}] Error en tarjeta ML: {e}")
                 continue
+
+        # 3. Resolver expensas faltantes en paralelo solo para candidatos que las necesitan
+        pending_expenses = [
+            c for c in raw_candidates if c["expenses_ars"] <= 0.0 and c["price_ars"] < MAX_TOTAL_BUDGET_ARS
+        ]
+
+        if pending_expenses:
+            def _resolve_exp(cand):
+                cand["expenses_ars"] = self._fetch_detail_expenses(cand["full_url"])
+
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                list(executor.map(_resolve_exp, pending_expenses))
+
+        listings: List[Listing] = []
+        for c in raw_candidates:
+            total_cost = c["price_ars"] + c["expenses_ars"]
+            if total_cost > MAX_TOTAL_BUDGET_ARS:
+                continue
+
+            listing = Listing(
+                id=f"{self.portal_name}_{c['portal_id']}",
+                portal=self.portal_name,
+                portal_id=c["portal_id"],
+                url=c["full_url"],
+                title=c["title"],
+                neighborhood=slug_info["name"],
+                address=c["address"],
+                price_ars=c["price_ars"],
+                expenses_ars=c["expenses_ars"],
+                total_cost_ars=total_cost,
+                rooms=c["rooms"],
+                m2=c["m2"],
+                has_balcony=c["has_balcony"],
+                thumbnail_url=c["img_url"],
+            )
+            listings.append(listing)
 
         return listings
