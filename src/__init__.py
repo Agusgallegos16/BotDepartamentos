@@ -1,0 +1,1 @@
+"""BotDepartamentos - Core Package."""
