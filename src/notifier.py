@@ -44,7 +44,17 @@ class TelegramNotifier:
         safe_title = html.escape(listing.title or "Departamento en alquiler")
         safe_neighborhood = html.escape(listing.neighborhood or "CABA")
         safe_address = html.escape(listing.address or "")
-        safe_portal = html.escape(listing.portal.capitalize())
+        PORTAL_DISPLAY_NAMES = {
+            "mob": "Mob.ar",
+            "cabaprop": "Cabaprop",
+            "directoaldueno": "Directo al Dueño",
+            "argenprop": "Argenprop",
+            "zonaprop": "Zonaprop",
+            "mercadolibre": "Mercado Libre",
+            "remax": "RE/MAX",
+        }
+        portal_display = PORTAL_DISPLAY_NAMES.get(listing.portal.lower(), listing.portal.capitalize())
+        safe_portal = html.escape(portal_display)
 
         # Badge de evento
         if event_type == "PRICE_DROP" and old_price:

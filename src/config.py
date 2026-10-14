@@ -63,7 +63,7 @@ REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "25"))
 DELAY_BETWEEN_REQUESTS = float(os.getenv("DELAY_BETWEEN_REQUESTS", "2.0"))
 
 _raw_portals = os.getenv(
-    "ACTIVE_PORTALS", "zonaprop,mercadolibre,remax,argenprop"
+    "ACTIVE_PORTALS", "zonaprop,mercadolibre,remax,argenprop,mob,cabaprop,directoaldueno"
 )
 ACTIVE_PORTALS: List[str] = [
     p.strip().lower() for p in _raw_portals.split(",") if p.strip()

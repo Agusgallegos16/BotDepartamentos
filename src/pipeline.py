@@ -12,6 +12,9 @@ from src.scrapers.argenprop import ArgenpropScraper
 from src.scrapers.zonaprop import ZonapropScraper
 from src.scrapers.mercadolibre import MercadoLibreScraper
 from src.scrapers.remax import RemaxScraper
+from src.scrapers.mob import MobScraper
+from src.scrapers.cabaprop import CabapropScraper
+from src.scrapers.directoaldueno import DirectoAlDuenoScraper
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +23,9 @@ SCRAPER_REGISTRY: Dict[str, Type[BaseScraper]] = {
     "zonaprop": ZonapropScraper,
     "mercadolibre": MercadoLibreScraper,
     "remax": RemaxScraper,
+    "mob": MobScraper,
+    "cabaprop": CabapropScraper,
+    "directoaldueno": DirectoAlDuenoScraper,
 }
 
 
