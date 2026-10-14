@@ -27,8 +27,13 @@ class BaseScraper(abc.ABC):
 
     def __init__(self):
         self.session = requests.Session(impersonate="chrome124")
+        self.is_blocked = False
         self.session.headers.update(
             {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                ),
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                 "Accept-Language": "es-419,es;q=0.9,en;q=0.8",
                 "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
@@ -36,23 +41,30 @@ class BaseScraper(abc.ABC):
                 "Sec-Ch-Ua-Platform": '"Windows"',
                 "Sec-Fetch-Dest": "document",
                 "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "same-origin",
+                "Sec-Fetch-Site": "none",
                 "Sec-Fetch-User": "?1",
                 "Upgrade-Insecure-Requests": "1",
             }
         )
 
-    def fetch_html(self, url: str) -> Optional[str]:
+    def fetch_html(self, url: str, headers: Optional[dict] = None) -> Optional[str]:
         """Performs HTTP GET with TLS fingerprint impersonation and error handling."""
         try:
             logger.info(f"[{self.portal_name}] GET {url}")
-            resp = self.session.get(url, timeout=REQUEST_TIMEOUT)
+            resp = self.session.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
             if resp.status_code == 200:
                 return resp.text
             elif resp.status_code in (403, 429):
                 logger.warning(
                     f"[{self.portal_name}] Bloqueo o límite detectado (HTTP {resp.status_code}) en {url}"
                 )
+                self.is_blocked = True
+                return None
+            elif resp.status_code in (202, 405):
+                logger.warning(
+                    f"[{self.portal_name}] Desafío WAF/CAPTCHA detectado (HTTP {resp.status_code}) en {url}"
+                )
+                self.is_blocked = True
                 return None
             else:
                 logger.warning(
@@ -110,6 +122,11 @@ class BaseScraper(abc.ABC):
         logger.info(f"--- Iniciando extracción para {self.portal_name.upper()} ---")
 
         for nb in TARGET_NEIGHBORHOODS:
+            if getattr(self, "is_blocked", False):
+                logger.warning(
+                    f"[{self.portal_name}] Omitiendo consultas restantes debido a bloqueo o desafío anti-bot detectado."
+                )
+                break
             try:
                 listings = self.scrape_neighborhood(nb)
                 # Filtrado de negocio básico

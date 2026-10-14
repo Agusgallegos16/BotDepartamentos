@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import time
 from typing import List
 from selectolax.lexbor import LexborHTMLParser
 
@@ -9,6 +11,7 @@ from src.config import (
     MAX_TOTAL_BUDGET_ARS,
     MIN_ROOMS,
     NEIGHBORHOOD_SLUGS,
+    TARGET_NEIGHBORHOODS,
     Listing,
 )
 from src.scrapers.base import BaseScraper
@@ -22,8 +25,62 @@ class ArgenpropScraper(BaseScraper):
     portal_name: str = "argenprop"
     BASE_URL = "https://www.argenprop.com"
 
-    def _build_url(self, neighborhood_slug: str) -> str:
-        max_budget = int(MAX_TOTAL_BUDGET_ARS)
+    def __init__(self):
+        super().__init__()
+        # Permite inyectar cookie o aws-waf-token si se configuró en el .env
+        custom_token = os.getenv("ARGENPROP_WAF_TOKEN", "").strip()
+        custom_cookie = os.getenv("ARGENPROP_COOKIE", "").strip()
+        if custom_token:
+            self.session.cookies.set("aws-waf-token", custom_token, domain=".argenprop.com")
+        elif custom_cookie:
+            for item in custom_cookie.split(";"):
+                if "=" in item:
+                    k, v = item.strip().split("=", 1)
+                    self.session.cookies.set(k.strip(), v.strip(), domain=".argenprop.com")
+
+    def _match_neighborhood(self, text: str) -> str:
+        """Determina a qué barrio objetivo pertenece el aviso a partir del texto (título y dirección)."""
+        text_lower = text.lower()
+        aliases = {
+            "palermo": [
+                "palermo", "botánico", "botanico", "las cañitas", "cañitas",
+                "palermo soho", "palermo hollywood", "palermo chico", "palermo viejo"
+            ],
+            "caballito": [
+                "caballito", "parque centenario", "primera junta", "caballito norte", "caballito sur"
+            ],
+            "belgrano": [
+                "belgrano", "barrancas de belgrano", "belgrano r", "belgrano c", "belgrano chico"
+            ],
+            "villa-urquiza": ["villa urquiza", "urquiza r"],
+            "villa-del-parque": ["villa del parque"],
+            "chacarita": ["chacarita"],
+            "recoleta": ["recoleta", "barrio norte"],
+            "colegiales": ["colegiales"],
+            "villa-crespo": ["villa crespo"],
+        }
+        for nb_key in TARGET_NEIGHBORHOODS:
+            nb_aliases = aliases.get(nb_key, [nb_key.replace("-", " ")])
+            for alias in nb_aliases:
+                if re.search(r"\b" + re.escape(alias) + r"\b", text_lower):
+                    return NEIGHBORHOOD_SLUGS.get(nb_key, {}).get("name", nb_key)
+        return ""
+
+    def scrape_neighborhood(self, neighborhood: str) -> List[Listing]:
+        """Implementado para compatibilidad con la interfaz BaseScraper. Reutiliza scrape_all."""
+        all_results = self.scrape_all()
+        target_name = NEIGHBORHOOD_SLUGS.get(neighborhood, {}).get("name", "").lower()
+        return [l for l in all_results if l.neighborhood.lower() == target_name]
+
+    def scrape_all(self) -> List[Listing]:
+        """
+        Extrae propiedades recientes de Capital Federal en un máximo de 3 páginas,
+        evitando el bloqueo por ráfagas de AWS WAF y cubriendo todos los barrios objetivo configurados.
+        """
+        all_listings: List[Listing] = []
+        seen_ids = set()
+        logger.info(f"--- Iniciando extracción para {self.portal_name.upper()} ---")
+
         if MIN_ROOMS <= 1:
             room_slug = "1-ambiente-o-2-ambientes-o-3-ambientes"
         elif MIN_ROOMS == 2:
@@ -33,24 +90,28 @@ class ArgenpropScraper(BaseScraper):
         else:
             room_slug = f"{MIN_ROOMS}-ambientes"
 
-        return (
-            f"{self.BASE_URL}/departamentos/alquiler/{neighborhood_slug}/"
-            f"{room_slug}?hasta-{max_budget}"
-        )
-
-    def scrape_neighborhood(self, neighborhood: str) -> List[Listing]:
-        slug_info = NEIGHBORHOOD_SLUGS.get(neighborhood)
-        if not slug_info:
-            logger.warning(f"[{self.portal_name}] Barrio no mapeado: '{neighborhood}'")
-            return []
-
-        base_url = self._build_url(slug_info["argenprop"])
-        listings: List[Listing] = []
-        seen_ids = set()
+        base_url = f"{self.BASE_URL}/departamentos/alquiler/capital-federal/{room_slug}?orden=MasNuevos"
 
         for page in range(1, 4):
-            page_url = base_url if page == 1 else f"{base_url}&pagina={page}"
-            html_content = self.fetch_html(page_url)
+            if getattr(self, "is_blocked", False):
+                break
+
+            if page > 1:
+                time.sleep(2.0)
+
+            page_url = (
+                base_url
+                if page == 1
+                else f"{self.BASE_URL}/departamentos/alquiler/capital-federal/{room_slug}?pagina-{page}&orden=MasNuevos"
+            )
+            extra_headers = {}
+            if page > 1:
+                extra_headers = {
+                    "Referer": base_url,
+                    "Sec-Fetch-Site": "same-origin",
+                }
+
+            html_content = self.fetch_html(page_url, headers=extra_headers)
             if not html_content:
                 break
 
@@ -58,7 +119,7 @@ class ArgenpropScraper(BaseScraper):
             cards = parser.css("div.listing__item")
             if not cards:
                 logger.debug(
-                    f"[{self.portal_name}] No se encontraron tarjetas en {page_url} (posible desafío WAF o sin resultados)."
+                    f"[{self.portal_name}] No se encontraron tarjetas en {page_url}."
                 )
                 break
 
@@ -73,11 +134,8 @@ class ArgenpropScraper(BaseScraper):
                     if not href:
                         continue
 
-                    full_url = (
-                        f"{self.BASE_URL}{href}" if href.startswith("/") else href
-                    )
+                    full_url = f"{self.BASE_URL}{href}" if href.startswith("/") else href
 
-                    # Extraer ID numérico del link (ej: --20491509)
                     id_match = re.search(r"--(\d+)", href)
                     portal_id = (
                         id_match.group(1)
@@ -88,12 +146,25 @@ class ArgenpropScraper(BaseScraper):
                     if portal_id in seen_ids:
                         continue
 
+                    # Título y dirección
+                    title_elem = card.css_first("h2.card__title, p.card__title--primary")
+                    title = title_elem.text(strip=True) if title_elem else "Departamento"
+
+                    addr_elem = card.css_first("p.card__address, .card__address")
+                    address = addr_elem.text(strip=True) if addr_elem else ""
+
+                    # Validar si pertenece a los barrios objetivo
+                    matched_nb = self._match_neighborhood(f"{title} {address}")
+                    if not matched_nb:
+                        continue
+
                     # Precio
                     price_elem = card.css_first("p.card__price")
                     raw_price = price_elem.text(strip=True) if price_elem else ""
                     price_ars = self.parse_ars_number(raw_price)
 
-                    if price_ars <= 0:
+                    # Descartar nulos, en USD o fuera de rango
+                    if price_ars < 150000 or price_ars > MAX_TOTAL_BUDGET_ARS:
                         continue
 
                     # Expensas
@@ -101,12 +172,13 @@ class ArgenpropScraper(BaseScraper):
                     raw_exp = exp_elem.text(strip=True) if exp_elem else ""
                     expenses_ars = self.parse_ars_number(raw_exp)
 
-                    # Título y dirección
-                    title_elem = card.css_first("h2.card__title, p.card__title--primary")
-                    title = title_elem.text(strip=True) if title_elem else "Departamento"
+                    total_cost = price_ars + (expenses_ars or 0.0)
+                    if total_cost > MAX_TOTAL_BUDGET_ARS:
+                        continue
 
-                    addr_elem = card.css_first("p.card__address, .card__address")
-                    address = addr_elem.text(strip=True) if addr_elem else slug_info["name"]
+                    # Descartar si el alquiler está a menos de $150.000 del tope sin expensas especificadas
+                    if expenses_ars <= 0.0 and price_ars >= (MAX_TOTAL_BUDGET_ARS - 150000):
+                        continue
 
                     # Características (ambientes, m2)
                     feature_items = card.css("ul.card__main-features li")
@@ -149,8 +221,8 @@ class ArgenpropScraper(BaseScraper):
                         portal_id=portal_id,
                         url=full_url,
                         title=title,
-                        neighborhood=slug_info["name"],
-                        address=address,
+                        neighborhood=matched_nb,
+                        address=address or matched_nb,
                         price_ars=price_ars,
                         expenses_ars=expenses_ars,
                         rooms=rooms,
@@ -159,15 +231,17 @@ class ArgenpropScraper(BaseScraper):
                         thumbnail_url=img_url,
                     )
                     seen_ids.add(portal_id)
-                    listings.append(listing)
+                    all_listings.append(listing)
                     new_on_page += 1
 
                 except Exception as e:
                     logger.debug(f"[{self.portal_name}] Error en tarjeta: {e}")
                     continue
 
-            # Si no hubo avisos nuevos o la página tuvo menos de 20 tarjetas, cortar
             if new_on_page == 0 or len(cards) < 20:
                 break
 
-        return listings
+        logger.info(
+            f"[{self.portal_name}] Total extraídos en barrios objetivo: {len(all_listings)}"
+        )
+        return all_listings
