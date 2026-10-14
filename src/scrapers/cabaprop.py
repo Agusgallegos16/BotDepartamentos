@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
+import unicodedata
 from typing import Dict, List
 
 from src.config import (
@@ -28,6 +30,17 @@ class CabapropScraper(BaseScraper):
     def __init__(self):
         super().__init__()
         self._barrios_map: Dict[int, str] = {}
+
+    @staticmethod
+    def _slugify(text: str) -> str:
+        """Genera slug para URLs de cabaprop emulando su frontend Next.js."""
+        if not text:
+            return "departamento"
+        n = unicodedata.normalize("NFD", text)
+        n = re.sub(r"[\u0300-\u036f]", "", n)
+        n = re.sub(r"[^a-zA-Z0-9\-_~]+", "-", n)
+        n = n.strip("-")
+        return n or "departamento"
 
     def _load_barrios_map(self) -> None:
         """Carga el mapa de IDs de barrio a nombres desde la API de cabaprop."""
@@ -182,15 +195,18 @@ class CabapropScraper(BaseScraper):
                             title_str = it.get("title") or ""
                             has_balcony = self.detect_balcony(desc) or self.detect_balcony(title_str)
 
+                        title = (it.get("title") or f"Departamento en alquiler en {matched_nb}").strip()
+
                         permalink = (it.get("permalink") or "").strip()
-                        if not permalink:
-                            permalink = f"https://cabaprop.com.ar/propiedad/{property_id}"
+                        # En Next.js la ruta obligatoria es /propiedad/[id]/[slug]
+                        # Si no hay permalink o termina solo en el ID sin slug, construir la URL completa con slug
+                        if not permalink or permalink.rstrip("/").endswith(property_id):
+                            slug = self._slugify(title)
+                            permalink = f"https://cabaprop.com.ar/propiedad/{property_id}/{slug}"
 
                         # Imagen
                         images = it.get("images") or []
                         thumbnail_url = images[0].get("url", "") if images else ""
-
-                        title = (it.get("title") or f"Departamento en alquiler en {matched_nb}").strip()
 
                         listing = Listing(
                             id=f"cabaprop_{property_id}",
