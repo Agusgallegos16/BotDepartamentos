@@ -50,7 +50,7 @@ class RemaxScraper(BaseScraper):
         max_budget = int(MAX_TOTAL_BUDGET_ARS)
         logger.info(f"--- Iniciando extracción para {self.portal_name.upper()} ---")
 
-        for page in range(5):
+        for page in range(3):
             try:
                 params = {
                     "page": page,

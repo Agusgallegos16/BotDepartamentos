@@ -93,128 +93,148 @@ class MercadoLibreScraper(BaseScraper):
             logger.warning(f"[{self.portal_name}] Barrio no mapeado: '{neighborhood}'")
             return []
 
-        url = self._build_url(slug_info["mercadolibre"])
-        html_content = self.fetch_html(url)
-        if not html_content:
-            return []
-
-        parser = LexborHTMLParser(html_content)
-        cards = parser.css("li.ui-search-layout__item")
-
+        base_url = self._build_url(slug_info["mercadolibre"])
         raw_candidates = []
+        seen_portal_ids = set()
 
-        for card in cards:
-            try:
-                # Enlace y Portal ID
-                link_elem = card.css_first("a.poly-component__title, a.ui-search-link, a")
-                if not link_elem:
-                    continue
+        for page in range(1, 4):
+            if page == 1:
+                page_url = base_url
+            else:
+                offset = (page - 1) * 48 + 1
+                page_url = f"{base_url}_Desde_{offset}_NoIndex_True"
 
-                full_url = link_elem.attributes.get("href") or ""
-                if not full_url:
-                    continue
+            html_content = self.fetch_html(page_url)
+            if not html_content:
+                break
 
-                # Limpiar fragmentos y query params extensos de ML
-                if "#" in full_url:
-                    full_url = full_url.split("#")[0]
-                if "?" in full_url:
-                    full_url = full_url.split("?")[0]
+            parser = LexborHTMLParser(html_content)
+            cards = parser.css("li.ui-search-layout__item")
+            if not cards:
+                break
 
-                # ID extraído de la URL (ej: MLA-2168563171 o MLA123456)
-                id_match = re.search(r"(MLA-?\d+)", full_url, re.IGNORECASE)
-                portal_id = (
-                    id_match.group(1).replace("-", "")
-                    if id_match
-                    else str(hash(full_url))
-                )
+            new_on_page = 0
+            for card in cards:
+                try:
+                    # Enlace y Portal ID
+                    link_elem = card.css_first("a.poly-component__title, a.ui-search-link, a")
+                    if not link_elem:
+                        continue
 
-                # Precio
-                price_elem = card.css_first(".andes-money-amount__fraction")
-                raw_price = price_elem.text(strip=True) if price_elem else ""
-                price_ars = self.parse_ars_number(raw_price)
+                    full_url = link_elem.attributes.get("href") or ""
+                    if not full_url:
+                        continue
 
-                if price_ars <= 0 or price_ars > MAX_TOTAL_BUDGET_ARS:
-                    continue
+                    # Limpiar fragmentos y query params extensos de ML
+                    if "#" in full_url:
+                        full_url = full_url.split("#")[0]
+                    if "?" in full_url:
+                        full_url = full_url.split("?")[0]
 
-                # Título
-                title_elem = card.css_first(
-                    ".poly-component__title, .ui-search-item__title, h2"
-                )
-                title = title_elem.text(strip=True) if title_elem else "Departamento"
-
-                # Ubicación / Dirección
-                loc_elem = card.css_first(
-                    ".poly-component__location, .ui-search-item__location"
-                )
-                address = loc_elem.text(strip=True) if loc_elem else slug_info["name"]
-
-                # Atributos (ambientes, m2)
-                attr_items = card.css(
-                    ".poly-attributes-list__item, ul.ui-search-card-attributes li"
-                )
-                attr_texts = [a.text(strip=True) for a in attr_items]
-                combined_text = " ".join([title, address] + attr_texts + [card.text() or ""])
-
-                rooms = 0
-                m2 = 0.0
-
-                for attr in attr_texts:
-                    attr_lower = attr.lower()
-                    if "amb" in attr_lower:
-                        rooms = self.extract_rooms(attr)
-                    elif "m²" in attr_lower or "m2" in attr_lower:
-                        m2_match = re.search(r"(\d+)", attr)
-                        if m2_match:
-                            m2 = float(m2_match.group(1))
-
-                if rooms == 0:
-                    rooms = self.extract_rooms(combined_text)
-
-                if 0 < rooms < MIN_ROOMS:
-                    continue
-
-                has_balcony = self.detect_balcony(combined_text)
-
-                # Imagen
-                img_elem = card.css_first("img")
-                img_url = ""
-                if img_elem:
-                    img_url = (
-                        img_elem.attributes.get("data-src")
-                        or img_elem.attributes.get("src")
-                        or ""
+                    # ID extraído de la URL (ej: MLA-2168563171 o MLA123456)
+                    id_match = re.search(r"(MLA-?\d+)", full_url, re.IGNORECASE)
+                    portal_id = (
+                        id_match.group(1).replace("-", "")
+                        if id_match
+                        else str(hash(full_url))
                     )
 
-                # 1. Intentar extraer expensas directamente del texto de la tarjeta
-                expenses_ars = 0.0
-                card_text = card.text() or ""
-                exp_match = re.search(r"expensas\s*[:$]?\s*([\d\.]+)", card_text, re.IGNORECASE)
-                if exp_match:
-                    expenses_ars = self.parse_ars_number(exp_match.group(1))
+                    if portal_id in seen_portal_ids:
+                        continue
 
-                # 2. Si no están en la tarjeta, verificar si ya las tenemos en caché de la base de datos
-                listing_db_id = f"{self.portal_name}_{portal_id}"
-                if expenses_ars <= 0.0:
-                    cached_exp = self.db.get_cached_expenses(listing_db_id, price_ars)
-                    if cached_exp is not None:
-                        expenses_ars = cached_exp
+                    # Precio
+                    price_elem = card.css_first(".andes-money-amount__fraction")
+                    raw_price = price_elem.text(strip=True) if price_elem else ""
+                    price_ars = self.parse_ars_number(raw_price)
 
-                raw_candidates.append({
-                    "portal_id": portal_id,
-                    "full_url": full_url,
-                    "title": title,
-                    "address": address,
-                    "price_ars": price_ars,
-                    "expenses_ars": expenses_ars,
-                    "rooms": rooms,
-                    "m2": m2,
-                    "has_balcony": has_balcony,
-                    "img_url": img_url,
-                })
+                    if price_ars <= 0 or price_ars > MAX_TOTAL_BUDGET_ARS:
+                        continue
 
-            except Exception as e:
-                logger.debug(f"[{self.portal_name}] Error en tarjeta ML: {e}")
-                continue
+                    # Título
+                    title_elem = card.css_first(
+                        ".poly-component__title, .ui-search-item__title, h2"
+                    )
+                    title = title_elem.text(strip=True) if title_elem else "Departamento"
+
+                    # Ubicación / Dirección
+                    loc_elem = card.css_first(
+                        ".poly-component__location, .ui-search-item__location"
+                    )
+                    address = loc_elem.text(strip=True) if loc_elem else slug_info["name"]
+
+                    # Atributos (ambientes, m2)
+                    attr_items = card.css(
+                        ".poly-attributes-list__item, ul.ui-search-card-attributes li"
+                    )
+                    attr_texts = [a.text(strip=True) for a in attr_items]
+                    combined_text = " ".join([title, address] + attr_texts + [card.text() or ""])
+
+                    rooms = 0
+                    m2 = 0.0
+
+                    for attr in attr_texts:
+                        attr_lower = attr.lower()
+                        if "amb" in attr_lower:
+                            rooms = self.extract_rooms(attr)
+                        elif "m²" in attr_lower or "m2" in attr_lower:
+                            m2_match = re.search(r"(\d+)", attr)
+                            if m2_match:
+                                m2 = float(m2_match.group(1))
+
+                    if rooms == 0:
+                        rooms = self.extract_rooms(combined_text)
+
+                    if 0 < rooms < MIN_ROOMS:
+                        continue
+
+                    has_balcony = self.detect_balcony(combined_text)
+
+                    # Imagen
+                    img_elem = card.css_first("img")
+                    img_url = ""
+                    if img_elem:
+                        img_url = (
+                            img_elem.attributes.get("data-src")
+                            or img_elem.attributes.get("src")
+                            or ""
+                        )
+
+                    # 1. Intentar extraer expensas directamente del texto de la tarjeta
+                    expenses_ars = 0.0
+                    card_text = card.text() or ""
+                    exp_match = re.search(r"expensas\s*[:$]?\s*([\d\.]+)", card_text, re.IGNORECASE)
+                    if exp_match:
+                        expenses_ars = self.parse_ars_number(exp_match.group(1))
+
+                    # 2. Si no están en la tarjeta, verificar si ya las tenemos en caché de la base de datos
+                    listing_db_id = f"{self.portal_name}_{portal_id}"
+                    if expenses_ars <= 0.0:
+                        cached_exp = self.db.get_cached_expenses(listing_db_id, price_ars)
+                        if cached_exp is not None:
+                            expenses_ars = cached_exp
+
+                    raw_candidates.append({
+                        "portal_id": portal_id,
+                        "full_url": full_url,
+                        "title": title,
+                        "address": address,
+                        "price_ars": price_ars,
+                        "expenses_ars": expenses_ars,
+                        "rooms": rooms,
+                        "m2": m2,
+                        "has_balcony": has_balcony,
+                        "img_url": img_url,
+                    })
+                    seen_portal_ids.add(portal_id)
+                    new_on_page += 1
+
+                except Exception as e:
+                    logger.debug(f"[{self.portal_name}] Error en tarjeta ML: {e}")
+                    continue
+
+            # Si no hubo avisos nuevos o la página tuvo menos de 48 tarjetas, cortar
+            if new_on_page == 0 or len(cards) < 48:
+                break
 
         # 3. Resolver expensas faltantes en paralelo solo para candidatos que las necesitan
         pending_expenses = [

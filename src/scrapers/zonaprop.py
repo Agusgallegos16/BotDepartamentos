@@ -62,140 +62,154 @@ class ZonapropScraper(BaseScraper):
         listings: List[Listing] = []
         seen_ids = set()
 
-        for url in urls:
-            html_content = self.fetch_html(url)
-            if not html_content:
-                continue
+        for base_url in urls:
+            for page in range(1, 4):
+                page_url = (
+                    base_url
+                    if page == 1
+                    else base_url.replace(".html", f"-pagina-{page}.html")
+                )
+                html_content = self.fetch_html(page_url)
+                if not html_content:
+                    break
 
-            parser = LexborHTMLParser(html_content)
-            cards = parser.css("div[data-posting-type]")
-            if not cards:
-                cards = parser.css(".postingCard")
+                parser = LexborHTMLParser(html_content)
+                cards = parser.css("div[data-posting-type]")
+                if not cards:
+                    cards = parser.css(".postingCard")
+                if not cards:
+                    break
 
-            for card in cards:
-                try:
-                    portal_id = card.attributes.get("data-id") or ""
-                    posting_path = card.attributes.get("data-to-posting") or ""
+                new_on_page = 0
+                for card in cards:
+                    try:
+                        portal_id = card.attributes.get("data-id") or ""
+                        posting_path = card.attributes.get("data-to-posting") or ""
 
-                    if not portal_id and posting_path:
-                        id_match = re.search(r"-(\d+)\.html", posting_path)
-                        if id_match:
-                            portal_id = id_match.group(1)
+                        if not portal_id and posting_path:
+                            id_match = re.search(r"-(\d+)\.html", posting_path)
+                            if id_match:
+                                portal_id = id_match.group(1)
 
-                    if not portal_id or not posting_path:
-                        continue
+                        if not portal_id or not posting_path:
+                            continue
 
-                    if portal_id in seen_ids:
-                        continue
+                        if portal_id in seen_ids:
+                            continue
 
-                    full_url = (
-                        f"{self.BASE_URL}{posting_path}"
-                        if posting_path.startswith("/")
-                        else posting_path
-                    )
-                    # Limpiar query params de tracking
-                    if "?" in full_url:
-                        full_url = full_url.split("?")[0]
-
-                    # Precio de alquiler
-                    price_elem = card.css_first(
-                        "[class*='postingPrices-module__price'], [data-qa='POSTING_CARD_PRICE']"
-                    )
-                    raw_price = price_elem.text(strip=True) if price_elem else ""
-                    price_ars = self.parse_ars_number(raw_price)
-
-                    # Si el precio es 0 o está en USD, saltar
-                    if price_ars <= 0:
-                        continue
-
-                    # Expensas
-                    exp_elem = card.css_first(
-                        "[class*='postingPrices-module__expenses'], [data-qa='expensas']"
-                    )
-                    raw_exp = exp_elem.text(strip=True) if exp_elem else ""
-                    expenses_ars = self.parse_ars_number(raw_exp)
-
-                    # Dirección
-                    addr_elem = card.css_first("[class*='location-address']")
-                    address = addr_elem.text(strip=True) if addr_elem else ""
-                    if not address:
-                        loc_elem = card.css_first(
-                            "[class*='postingLocations-module__location-block'], [data-qa='POSTING_CARD_LOCATION']"
+                        full_url = (
+                            f"{self.BASE_URL}{posting_path}"
+                            if posting_path.startswith("/")
+                            else posting_path
                         )
-                        address = loc_elem.text(strip=True) if loc_elem else ""
+                        # Limpiar query params de tracking
+                        if "?" in full_url:
+                            full_url = full_url.split("?")[0]
 
-                    # Título descriptivo
-                    desc_elem = card.css_first(
-                        "[class*='posting-description'] a, [class*='posting-description']"
-                    )
-                    desc_text = desc_elem.text(strip=True) if desc_elem else ""
-                    if desc_text:
-                        first_sent = re.split(r"[.\n]", desc_text)[0].strip()
-                        title = first_sent if len(first_sent) > 10 else desc_text[:90]
-                    elif address:
-                        title = f"Departamento en {address} ({slug_info['name']})"
-                    else:
-                        title = f"Departamento en {slug_info['name']}"
+                        # Precio de alquiler
+                        price_elem = card.css_first(
+                            "[class*='postingPrices-module__price'], [data-qa='POSTING_CARD_PRICE']"
+                        )
+                        raw_price = price_elem.text(strip=True) if price_elem else ""
+                        price_ars = self.parse_ars_number(raw_price)
 
-                    # Características (ambientes, m2)
-                    feature_spans = card.css(
-                        "[class*='postingMainFeatures-module__posting-main-features-span']"
-                    )
-                    feature_texts = [f.text(strip=True) for f in feature_spans]
-                    all_text = " ".join([title, address] + feature_texts)
+                        # Si el precio es 0 o está en USD, saltar
+                        if price_ars <= 0:
+                            continue
 
-                    rooms = 0
-                    m2 = 0.0
+                        # Expensas
+                        exp_elem = card.css_first(
+                            "[class*='postingPrices-module__expenses'], [data-qa='expensas']"
+                        )
+                        raw_exp = exp_elem.text(strip=True) if exp_elem else ""
+                        expenses_ars = self.parse_ars_number(raw_exp)
 
-                    for feat in feature_texts:
-                        feat_lower = feat.lower()
-                        if "amb" in feat_lower:
-                            rooms = self.extract_rooms(feat)
-                        elif "m²" in feat_lower or "m2" in feat_lower:
-                            m2_match = re.search(r"(\d+)", feat)
-                            if m2_match:
-                                m2 = float(m2_match.group(1))
+                        # Dirección
+                        addr_elem = card.css_first("[class*='location-address']")
+                        address = addr_elem.text(strip=True) if addr_elem else ""
+                        if not address:
+                            loc_elem = card.css_first(
+                                "[class*='postingLocations-module__location-block'], [data-qa='POSTING_CARD_LOCATION']"
+                            )
+                            address = loc_elem.text(strip=True) if loc_elem else ""
 
-                    # Si no se extrajo de features, buscar en texto completo
-                    if rooms == 0:
-                        rooms = self.extract_rooms(all_text)
+                        # Título descriptivo
+                        desc_elem = card.css_first(
+                            "[class*='posting-description'] a, [class*='posting-description']"
+                        )
+                        desc_text = desc_elem.text(strip=True) if desc_elem else ""
+                        if desc_text:
+                            first_sent = re.split(r"[.\n]", desc_text)[0].strip()
+                            title = first_sent if len(first_sent) > 10 else desc_text[:90]
+                        elif address:
+                            title = f"Departamento en {address} ({slug_info['name']})"
+                        else:
+                            title = f"Departamento en {slug_info['name']}"
 
-                    # Filtrar si ambientes conocidos son menores a MIN_ROOMS
-                    if 0 < rooms < MIN_ROOMS:
+                        # Características (ambientes, m2)
+                        feature_spans = card.css(
+                            "[class*='postingMainFeatures-module__posting-main-features-span']"
+                        )
+                        feature_texts = [f.text(strip=True) for f in feature_spans]
+                        all_text = " ".join([title, address] + feature_texts)
+
+                        rooms = 0
+                        m2 = 0.0
+
+                        for feat in feature_texts:
+                            feat_lower = feat.lower()
+                            if "amb" in feat_lower:
+                                rooms = self.extract_rooms(feat)
+                            elif "m²" in feat_lower or "m2" in feat_lower:
+                                m2_match = re.search(r"(\d+)", feat)
+                                if m2_match:
+                                    m2 = float(m2_match.group(1))
+
+                        # Si no se extrajo de features, buscar en texto completo
+                        if rooms == 0:
+                            rooms = self.extract_rooms(all_text)
+
+                        # Filtrar si ambientes conocidos son menores a MIN_ROOMS
+                        if 0 < rooms < MIN_ROOMS:
+                            continue
+
+                        has_balcony = self.detect_balcony(all_text)
+
+                        # Imagen de portada
+                        img_elem = card.css_first("img")
+                        img_url = ""
+                        if img_elem:
+                            img_url = (
+                                img_elem.attributes.get("src")
+                                or img_elem.attributes.get("data-src")
+                                or ""
+                            )
+
+                        listing = Listing(
+                            id=f"{self.portal_name}_{portal_id}",
+                            portal=self.portal_name,
+                            portal_id=portal_id,
+                            url=full_url,
+                            title=title,
+                            neighborhood=slug_info["name"],
+                            address=address,
+                            price_ars=price_ars,
+                            expenses_ars=expenses_ars,
+                            rooms=rooms,
+                            m2=m2,
+                            has_balcony=has_balcony,
+                            thumbnail_url=img_url,
+                        )
+                        seen_ids.add(portal_id)
+                        listings.append(listing)
+                        new_on_page += 1
+
+                    except Exception as e:
+                        logger.debug(f"[{self.portal_name}] Error parseando tarjeta individual: {e}")
                         continue
 
-                    has_balcony = self.detect_balcony(all_text)
-
-                    # Imagen de portada
-                    img_elem = card.css_first("img")
-                    img_url = ""
-                    if img_elem:
-                        img_url = (
-                            img_elem.attributes.get("src")
-                            or img_elem.attributes.get("data-src")
-                            or ""
-                        )
-
-                    listing = Listing(
-                        id=f"{self.portal_name}_{portal_id}",
-                        portal=self.portal_name,
-                        portal_id=portal_id,
-                        url=full_url,
-                        title=title,
-                        neighborhood=slug_info["name"],
-                        address=address,
-                        price_ars=price_ars,
-                        expenses_ars=expenses_ars,
-                        rooms=rooms,
-                        m2=m2,
-                        has_balcony=has_balcony,
-                        thumbnail_url=img_url,
-                    )
-                    seen_ids.add(portal_id)
-                    listings.append(listing)
-
-                except Exception as e:
-                    logger.debug(f"[{self.portal_name}] Error parseando tarjeta individual: {e}")
-                    continue
+                # Si no hubo avisos nuevos (ej. redirección) o la página tuvo menos de 20 tarjetas, cortar
+                if new_on_page == 0 or len(cards) < 20:
+                    break
 
         return listings
