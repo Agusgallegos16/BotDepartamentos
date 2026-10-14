@@ -15,6 +15,7 @@ from src.scrapers.remax import RemaxScraper
 from src.scrapers.mob import MobScraper
 from src.scrapers.cabaprop import CabapropScraper
 from src.scrapers.directoaldueno import DirectoAlDuenoScraper
+from src.scrapers.roomix import RoomixScraper
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ SCRAPER_REGISTRY: Dict[str, Type[BaseScraper]] = {
     "mob": MobScraper,
     "cabaprop": CabapropScraper,
     "directoaldueno": DirectoAlDuenoScraper,
+    "roomix": RoomixScraper,
 }
 
 

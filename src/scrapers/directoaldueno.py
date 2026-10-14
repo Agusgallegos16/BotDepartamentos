@@ -25,7 +25,7 @@ class DirectoAlDuenoScraper(BaseScraper):
 
     portal_name: str = "directoaldueno"
     BASE_URL = "https://directoaldueno.com.ar"
-    MAX_PAGES = 3
+    MAX_PAGES = 7
 
     def _match_neighborhood(self, text: str) -> str:
         """Determina a qué barrio objetivo pertenece el aviso a partir del texto."""

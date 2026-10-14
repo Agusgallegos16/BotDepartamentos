@@ -25,7 +25,7 @@ class CabapropScraper(BaseScraper):
     portal_name: str = "cabaprop"
     API_URL = "https://cabaprop.com.ar/api/v1/properties/find-properties"
     BARRIOS_URL = "https://cabaprop.com.ar/api/v1/utils/barrios-flat"
-    MAX_PAGES = 3
+    MAX_PAGES = 7
 
     def __init__(self):
         super().__init__()

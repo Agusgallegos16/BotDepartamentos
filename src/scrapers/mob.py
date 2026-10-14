@@ -22,7 +22,7 @@ class MobScraper(BaseScraper):
 
     portal_name: str = "mob"
     API_URL = "https://www.mob.ar/api/properties/search"
-    MAX_PAGES = 3
+    MAX_PAGES = 7
 
     def _match_neighborhood(self, text: str) -> str:
         """Determina a qué barrio objetivo pertenece el aviso a partir del texto."""

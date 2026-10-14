@@ -52,6 +52,7 @@ class TelegramNotifier:
             "zonaprop": "Zonaprop",
             "mercadolibre": "Mercado Libre",
             "remax": "RE/MAX",
+            "roomix": "Roomix",
         }
         portal_display = PORTAL_DISPLAY_NAMES.get(listing.portal.lower(), listing.portal.capitalize())
         safe_portal = html.escape(portal_display)
